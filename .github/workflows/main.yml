@@ -1,0 +1,95 @@
+name: Auto Tag on Commit
+
+on:
+  push:
+    branches:
+      - azure
+      - aws
+      - beta
+      - dev
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      - name: Set up Git
+        run: |
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+
+      - name: Fetch all tags
+        run: git fetch --tags --force
+
+      - name: Auto create tag based on commit message and branch
+        run: |
+          # Fetch the latest tag
+          LATEST_TAG=$(git tag --sort=-v:refname | head -n 1 || echo "v0.0.0")
+          echo "Latest Tag: $LATEST_TAG"
+
+          # Extract MAJOR, MINOR, and PATCH from the latest tag
+          IFS='.' read -r MAJOR MINOR PATCH <<<"${LATEST_TAG//v/}"
+
+          # Get the last commit message
+          COMMIT_MESSAGE=$(git log -1 --pretty=%B)
+          echo "Commit Message: $COMMIT_MESSAGE"
+
+          # Increment version based on commit type
+          if [[ "$COMMIT_MESSAGE" == CHORE* ]]; then
+              MAJOR=$((MAJOR + 1))
+              MINOR=0
+              PATCH=0
+          elif [[ "$COMMIT_MESSAGE" == FEA* ]]; then
+              MINOR=$((MINOR + 1))
+              PATCH=0
+          elif [[ "$COMMIT_MESSAGE" == FIX* ]]; then
+              PATCH=$((PATCH + 1))
+          else
+              echo "No valid commit message type found (CHORE, FEA, FIX)."
+              exit 0
+          fi
+
+          # Construct the base version tag
+          NEW_TAG="v${MAJOR}.${MINOR}.${PATCH}"
+          echo "Proposed Base Tag: $NEW_TAG"
+
+          # Get the current branch name
+          BRANCH_NAME=$(git rev-parse --abbrev-ref HEAD)
+          echo "Current Branch: $BRANCH_NAME"
+
+          # Add environment-specific suffix
+          if [[ "$BRANCH_NAME" == "azure" ]]; then
+              NEW_TAG="${NEW_TAG}-staging"
+          elif [[ "$BRANCH_NAME" == "aws" ]]; then
+              NEW_TAG="$NEW_TAG"
+          elif [[ "$BRANCH_NAME" == "beta" ]]; then
+              # Check for existing beta tags and increment the rc version
+              LATEST_BETA_TAG=$(git tag --sort=-v:refname | grep -E "^v${MAJOR}\.${MINOR}\.${PATCH}\.rc\.[0-9]+$" | head -n 1 || echo "")
+              if [[ -n "$LATEST_BETA_TAG" ]]; then
+                  RC_VERSION=$(echo "$LATEST_BETA_TAG" | grep -oE "\.rc\.[0-9]+$" | cut -d. -f3)
+                  RC_VERSION=$((RC_VERSION + 1))
+              else
+                  RC_VERSION=0
+              fi
+              NEW_TAG="${NEW_TAG}.rc.${RC_VERSION}"
+          elif [[ "$BRANCH_NAME" == "dev" ]]; then
+              NEW_TAG="${NEW_TAG}-dev"
+          else
+              echo "Branch not recognized for environment-specific tagging. Using base tag."
+          fi
+
+          echo "Final Tag: $NEW_TAG"
+
+          # Check if the tag already exists
+          if git rev-parse "$NEW_TAG" >/dev/null 2>&1; then
+              echo "Tag $NEW_TAG already exists. Skipping creation."
+              exit 0
+          fi
+
+          # Create and push the new tag
+          echo "Creating and pushing tag: $NEW_TAG"
+          git tag "$NEW_TAG"
+          git push origin "$NEW_TAG"
